@@ -2,10 +2,14 @@
 
 This is the Arduino code for the Cocktailcloud Project. It is used to control the hardware and to communicate with the Cocktailcloud-API.
 
-In the following sections ill give a short overview of the project. More information will be added soon.
+In the following sections ill give a short overview of the project. 
+
+More information will be added "soon";-)
 
 ## Software
-The Machine is controlled by the React Frontend but can also load required Data from the API itself. 
+~~The Machine is controlled by the React Frontend but can also load required Data from the API itself.~~
+
+The Machine connects to a SocketIO Server which is used to control the Machine. The Server is part of the Cocktailcloud-API.
 
 The Project is based on the ESP32 and PlatformIO (should work with Arduino IDE as well).
 The 

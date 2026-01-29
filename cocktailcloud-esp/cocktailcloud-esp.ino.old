@@ -1,0 +1,672 @@
+
+// Old Version using Api requests!!! New Version uses Socket.io!!!
+
+// #####################################################################################################################
+// #                                                                                
+// #  ██████╗ ██████╗  ██████╗██╗  ██╗████████╗ █████╗ ██╗██╗      ██████╗██╗      ██████╗ ██╗   ██╗██████╗           
+// # ██╔════╝██╔═══██╗██╔════╝██║ ██╔╝╚══██╔══╝██╔══██╗██║██║     ██╔════╝██║     ██╔═══██╗██║   ██║██╔══██╗          
+// # ██║     ██║   ██║██║     █████╔╝    ██║   ███████║██║██║     ██║     ██║     ██║   ██║██║   ██║██║  ██║    █████╗
+// # ██║     ██║   ██║██║     ██╔═██╗    ██║   ██╔══██║██║██║     ██║     ██║     ██║   ██║██║   ██║██║  ██║    ╚════╝
+// # ╚██████╗╚██████╔╝╚██████╗██║  ██╗   ██║   ██║  ██║██║███████╗╚██████╗███████╗╚██████╔╝╚██████╔╝██████╔╝          
+// #  ╚═════╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚══════╝ ╚═════╝╚══════╝ ╚═════╝  ╚═════╝ ╚═════╝           
+// #                                                                                                                
+// # ███████╗███████╗██████╗                                                                                          
+// # ██╔════╝██╔════╝██╔══██╗                                                                                         
+// # █████╗  ███████╗██████╔╝                                                                                         
+// # ██╔══╝  ╚════██║██╔═══╝                                                                                          
+// # ███████╗███████║██║                                                                                              
+// # ╚══════╝╚══════╝╚═╝                                                                                              
+// #
+// #####################################################################################################################    
+//
+//  This is the main file for the cocktailcloud-esp project.
+//  It is based on the ESP32 microcontroller and is used to control the stepper motors of the cocktailmachine.
+//  Information about the project can be found in the README.md file.
+//
+// #####################################################################################################################
+
+/* -------------------------------------------------------------------------- */
+/*                        INCLUDES AND PIN DEFINITIONS                        */
+/* -------------------------------------------------------------------------- */
+
+#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <ESP_FlexyStepper.h>
+#include <HTTPClient.h>
+
+#define STEPPER_COMMON_STEP_PIN 13
+
+#define LED_PIN 27
+
+#define BUTTON_PIN_1 14
+#define BUTTON_PIN_2 12
+
+#define SHIFTREG_DATA_PIN 26
+#define SHIFTREG_CLOCK_PIN 33
+#define SHIFTREG_STORE_PIN 32
+#define SHIFTREG_MR_PIN 25
+
+#define SHIFTREG_DIRECTION_BIT 12
+
+#define ERROR_CODE_API_RETURNED_ERR 1
+#define ERROR_CODE_INVALID_DATA 	2
+#define ERROR_HTTP_REQUEST          3
+
+// Shifregister data bits:  EN1 EN2 EN3 EN4 EN5 EN6 EN7 EN8 | EN9 EN10 EN11 EN12 DIR
+
+/* -------------------------------------------------------------------------- */
+/*                                    INIT                                    */
+/* -------------------------------------------------------------------------- */
+
+const bool _STA = true; // true = STA, false = AP
+
+const char* ap_ssid = "cocktailcloud-1";
+const char* ap_password = "1234567890";
+
+const char* sta_ssid = "ssid";
+const char* sta_password = "passwort";
+
+String server_ip = "192.168.4.2";
+String server_port = "43560";
+
+// Speed settings
+const int DISTANCE_TO_TRAVEL_IN_STEPS = 2000;
+const int SPEED_IN_STEPS_PER_SECOND = 300;
+const int ACCELERATION_IN_STEPS_PER_SECOND = 800;
+const int DECELERATION_IN_STEPS_PER_SECOND = 800;
+
+int http_error_count = 0;      // TODO                                                                      <<<<<<<<<<<<<< 
+
+struct State {
+    int active_cocktail = -1;   // id of the currently active cocktail
+    int num_steps = -1;         // number of steps of the currently active cocktail
+
+    int step_curr = -1;         // current step of the currently active cocktail
+
+    int err_state = -1;         // error state of the machine
+
+    bool busy = false;
+};
+
+struct Move {               // struct stores the information about the next move and flags to start/stop it
+    bool pumps[16] = {0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0};   // array of pumps to be used in the next move
+    int amount = 0;
+
+    bool stop = false;      // flag to stop current move at next possible point
+    bool run = false;       // flag to start new move at next possible point
+
+    bool moving = false;      // flag to indicate if a move is currently running
+};
+
+Move current_move;
+State state;
+
+AsyncWebServer server(80);
+
+HTTPClient http;
+
+ESP_FlexyStepper stepper;
+
+
+/* -------------------------------------------------------------------------- */
+/*                                    HELPER                                  */
+/* -------------------------------------------------------------------------- */
+
+bool is_number(String str) {
+    for (int i = 0; i < str.length(); i++) {
+        if ((str[i] < '0' or str[i] > '9') and str[i] != '-'){
+            return false;
+        }
+    }
+    return true;
+}
+
+void error_handler(){
+    // TODO                                                                      <<<<<<<<<<<<<< 
+}
+
+
+/* -------------------------------------------------------------------------- */
+/*                                    SETUP                                   */
+/* -------------------------------------------------------------------------- */
+
+void setup() {
+    Serial.begin(9600);
+    Serial.println(F(""));
+    Serial.println(F(">#######################################################"));
+    Serial.println(F(">Starting up..."));
+
+    setup_wifi();
+
+    setup_webserver();
+
+    setup_shiftregister();
+
+    setup_stepper();
+}
+
+
+void setup_wifi() {
+    if (_STA) {
+        Serial.println(F(">Connecting to WiFi..."));
+
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(sta_ssid, sta_password);
+        while (WiFi.status() != WL_CONNECTED) {
+            delay(500);
+            Serial.print(".");
+        }
+        Serial.println("");
+        Serial.print(">WiFi connected, IP address: ");
+        Serial.println(WiFi.localIP());
+    } 
+    else {
+        Serial.println(F(">Open AP..."));
+    
+        WiFi.mode(WIFI_AP);
+        WiFi.softAP(ap_ssid, ap_password);
+        IPAddress myIP = WiFi.softAPIP();
+        Serial.print(">AP IP address: ");
+        Serial.println(myIP);
+    }
+}
+
+void setup_webserver() {
+    Serial.println(F(">Booting up Webserver..."));
+
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+        Serial.println(">Webserver: /");
+        request->send(200, "text/plain", "Welcome to Cocktailcloud-ESP");
+    });
+
+    server.on("/ping", HTTP_GET, [](AsyncWebServerRequest *request){
+        Serial.println(">Webserver: /ping");
+        request->send(200, "text/plain", "OK");
+    });
+
+    server.on("/state", HTTP_GET, [](AsyncWebServerRequest *request){
+        Serial.println(">Webserver: /state");
+        serv_return_state(request);
+    });
+
+    server.on("/move", HTTP_GET, [](AsyncWebServerRequest *request){
+        Serial.println(">Webserver: /move");
+        serv_action_move(request);
+    });
+
+    server.on("/cocktail", HTTP_GET, [](AsyncWebServerRequest *request){
+        Serial.println(">Webserver: /cocktail");
+        serv_action_cocktail(request);
+    });
+
+    server.on("/set_server", HTTP_GET, [](AsyncWebServerRequest *request){
+        Serial.println(">Webserver: /set_server");
+        if (request->hasParam("ip") and request->hasParam("port")) {
+            server_ip = request->getParam("ip")->value();
+            server_port = request->getParam("port")->value();
+
+            Serial.println("    IP: " + server_ip);
+            Serial.println("    Port: " + server_port);
+
+            request->send(200, "text/plain", "OK");
+        }
+        else {
+            request->send(400, "text/plain", "Bad Request (missing parameters)");
+        }
+    });
+
+    server.on("/stop", HTTP_GET, [](AsyncWebServerRequest *request){
+        Serial.println(">Webserver: /stop");
+        serv_action_stop(request);
+    });
+
+    server.on("/light", HTTP_GET, [](AsyncWebServerRequest *request){
+        Serial.println(">Webserver: /light");
+        request->send(200, "text/plain", "OK");     // TODO
+    });
+
+    server.onNotFound([](AsyncWebServerRequest *request){
+        Serial.println(">Webserver: 404");
+        request->send(404, "text/plain", "Not found");
+    });
+
+    server.begin();
+
+}
+
+void setup_stepper() {
+    Serial.println(F(">Starting Stepper-Service... "));
+
+    stepper.connectToPins(STEPPER_COMMON_STEP_PIN);
+
+    stepper.setSpeedInStepsPerSecond(SPEED_IN_STEPS_PER_SECOND);
+    stepper.setAccelerationInStepsPerSecondPerSecond(ACCELERATION_IN_STEPS_PER_SECOND);
+    stepper.setDecelerationInStepsPerSecondPerSecond(DECELERATION_IN_STEPS_PER_SECOND);
+
+    //stepper.startAsService(1);
+}
+
+void setup_shiftregister() {
+    Serial.println(F(">Setting up Shiftregister... "));
+
+    pinMode(SHIFTREG_DATA_PIN, OUTPUT);
+    pinMode(SHIFTREG_CLOCK_PIN, OUTPUT);
+    pinMode(SHIFTREG_STORE_PIN, OUTPUT);
+    pinMode(SHIFTREG_MR_PIN, OUTPUT);
+
+    digitalWrite(SHIFTREG_MR_PIN, HIGH);
+    digitalWrite(SHIFTREG_STORE_PIN, LOW);
+
+    shiftreg_clear();
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                SHIFTREGISTER                               */
+/* -------------------------------------------------------------------------- */
+
+void shiftreg_clear() {
+    Serial.println(">Clearing Shiftregister");
+
+    bool shiftreg_data[16] = {0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0};
+    shiftreg_write(shiftreg_data);
+}
+
+void shiftreg_write(bool shiftreg_data[16]) {
+    Serial.print(">Writing Shiftregister:");
+    for (int i = 0; i < 16; i++) {
+        Serial.print(" ");
+        Serial.print(shiftreg_data[i]);
+    }
+    Serial.println("");
+
+    digitalWrite(SHIFTREG_STORE_PIN, LOW);
+
+    for (int i = 16; i >= 0; i--) {
+        digitalWrite(SHIFTREG_DATA_PIN, shiftreg_data[i]);
+        digitalWrite(SHIFTREG_CLOCK_PIN, HIGH);
+        delayMicroseconds(1);
+        digitalWrite(SHIFTREG_CLOCK_PIN, LOW);
+        delayMicroseconds(1);
+    }
+
+    digitalWrite(SHIFTREG_STORE_PIN, HIGH);
+}
+
+/* -------------------------------------------------------------------------- */
+/*                             WEBSERVER FUNCTIONS                            */
+/* -------------------------------------------------------------------------- */
+
+void serv_return_state(AsyncWebServerRequest *request) {
+
+    // prepare the json string
+    String json = "{";
+    json += "\"active_cocktail\": " + String(state.active_cocktail) + ",";
+    json += "\"step_curr\": " + String(state.step_curr) + ",";
+    json += "\"num_steps\": " + String(state.num_steps) + ",";
+    json += "\"busy\": " + String(state.busy) + ",";
+    json += "\"err_state\": " + String(state.err_state);
+    json += "}";
+
+    request->send(200, "application/json", json);
+}
+
+void serv_action_move(AsyncWebServerRequest *request) {
+    if(request->hasParam("pumps") and request->hasParam("amount")) {
+        Serial.println(">-----------------------------------------------------------------------------------------");
+        Serial.println(">Move:");
+
+        // get the parameters from the request
+        String pumps = request->getParam("pumps")->value();
+        String amount = request->getParam("amount")->value();
+
+        Serial.println("    Pumps: " + pumps);
+        Serial.println("    Amount: " + amount);
+
+        // check if pumps is a binary number greater than 0 and less than 2^16
+        if (pumps.length() > 16 or pumps.length() == 0) {
+            request->send(400, "text/plain", "Bad Request (too many/little pumps)");
+            Serial.println("    HTTP return: (too many/little pumps)");
+            return;
+        }
+        for (int i = 0; i < pumps.length(); i++) {
+            if (pumps[i] != '0' and pumps[i] != '1') {
+                request->send(400, "text/plain", "Bad Request (pumps not in binary format)");
+                Serial.println("    HTTP return: (pumps not in binary format)");
+                return;
+            }
+        }
+
+        // check if amount is a number
+        if (!is_number(amount)) {
+            request->send(400, "text/plain", "Bad Request (amount not a number)");
+            Serial.println("    HTTP return: (amount not a number)");
+            return;
+        }
+
+        // set the move struct
+        for (int i = 0; i < 16; i++) {
+            if (pumps[i] == '1') {
+                current_move.pumps [i] = true;
+            }
+            else {
+                current_move.pumps [i] = false;
+            }
+        }
+        current_move.amount = amount.toInt();
+        current_move.run = true; 
+
+        request->send(200, "text/plain", "OK");
+    }
+    else {
+        request->send(400, "text/plain", "Bad Request (missing parameters)");
+        Serial.println("    HTTP return: (missing parameters)");
+    }
+}
+
+void serv_action_cocktail(AsyncWebServerRequest *request) {
+    if(request->hasParam("id")) {
+        Serial.println(">-----------------------------------------------------------------------------------------");
+        Serial.println(">Cocktail:");
+
+        // get the parameters from the request
+        String cocktail = request->getParam("id")->value();
+
+        Serial.println("    Cocktail: " + cocktail);
+
+        // check if cocktail is a number
+        if (!is_number(cocktail)) {
+            request->send(400, "text/plain", "Bad Request (cocktail not a number)");
+            Serial.println("    HTTP return: (cocktail not a number)");
+            return;
+        }
+
+        // set the state struct
+        state.active_cocktail = cocktail.toInt();
+
+        request->send(200, "text/plain", "OK");
+    }
+    else {
+        request->send(400, "text/plain", "Bad Request (missing parameters)");
+        Serial.println("    HTTP return: (missing parameters)");
+    }
+}
+
+void serv_action_stop(AsyncWebServerRequest *request) {
+    Serial.println(">-----------------------------------------------------------------------------------------");
+    Serial.println(">Stop");
+
+    state.active_cocktail = -1;
+    state.num_steps = -1;
+    state.step_curr = -1;
+
+    current_move.stop = true;
+
+    request->send(200, "text/plain", "OK");
+}
+
+/* -------------------------------------------------------------------------- */
+/*                              REQUEST FUNCTIONS                             */
+/* -------------------------------------------------------------------------- */
+
+void request_cocktail_steps() {
+    Serial.println(">Requesting Cocktail Steps");
+
+    String url = "http://";
+        url += String(server_ip);
+        url += ":";
+        url += String(server_port);
+        url += "/api/v2/preparation/prepare_prepinfo/";
+        url += String(state.active_cocktail);
+        url += "?format=txt";
+
+    Serial.print("    Request:");
+    Serial.println(url);
+
+    // Make the HTTP request and set a timeout of 5000 milliseconds (5 seconds)
+    http.setTimeout(5000);
+    http.begin(url);
+    int httpResponseCode = http.GET();
+
+    if (httpResponseCode == HTTP_CODE_OK) {
+        // Process the response
+        String payload = http.getString();
+
+        phrase_cocktail_steps(payload);
+
+    } else {
+        Serial.print("    HTTP request failed with code: ");
+        Serial.println(httpResponseCode);
+    }
+
+    http.end();
+
+    if (state.num_steps > 0) {
+        state.step_curr = 0;
+    }
+}
+
+void phrase_cocktail_steps(String payload) {
+    Serial.println("    Got Payload: " + payload);
+
+    //check if payload is no error
+    if (payload == "ERR") {
+        Serial.println("    HTTP request failed (got ERR)");
+        return;
+    }
+
+    //check if payload is a number
+    if (!is_number(payload)) {
+        Serial.println("    HTTP request failed (not a number)");
+        return;
+    }
+
+    //check if payload is greater than 0
+    if (payload.toInt() <= 0) {
+        Serial.println("    HTTP request failed (not greater than 0)");
+        return;
+    }
+
+    state.num_steps = payload.toInt();
+    Serial.println("    Number of steps: " + String(state.num_steps));
+}
+
+void request_step_info() {
+
+    Serial.println(">Requesting Step Info");
+    
+    String url = "http://";
+        url += String(server_ip);
+        url += ":";
+        url += String(server_port);
+        url += "/api/v2/preparation/step_info/";
+        url += String(state.active_cocktail);
+        url += "/";
+        url += String(state.step_curr);
+        url += "?format=txt";
+
+    Serial.print("    Request:");
+    Serial.println(url);
+
+    // Make the HTTP request and set a timeout of 5000 milliseconds (5 seconds)
+    http.setTimeout(5000);
+    http.begin(url);
+    int httpResponseCode = http.GET();
+
+    if (httpResponseCode == HTTP_CODE_OK) {
+        // Process the response
+        String payload = http.getString();
+
+        phrase_step_info(payload);
+        
+    } else {
+        Serial.print("    HTTP request failed with code: ");
+        Serial.println(httpResponseCode);
+    }
+
+    http.end();
+}
+
+void phrase_step_info(String payload) {
+    Serial.println("    Got Payload: " + payload);
+
+
+    if (payload == "ERR") {
+        Serial.println("    HTTP request failed (got ERR)");
+        return;
+    }
+
+    // divide payload at | and check if there are 3 parts
+    // divide at first |
+    int pos = payload.indexOf('|');
+    if (pos == -1) {
+        Serial.println("    HTTP request failed (cannot divide at first '|')");
+        return;
+    }
+    
+    // get the second part
+    payload = payload.substring(pos + 1);
+
+    // divide at second |
+    pos = payload.indexOf('|');
+    if (pos == -1) {
+        Serial.println("    HTTP request failed (cannot divide at second '|')");
+        return;
+    }
+
+    // get the first and second part of the second part
+        String amount = payload.substring(0, pos);
+        String pump = payload.substring(pos + 1);
+
+    Serial.println("    Pumps: " + pump);
+    Serial.println("    Amount: " + amount);
+
+    // check if pump is a binary number greater than 0 and less than 2^16
+    if (pump.length() > 16 or pump.length() == 0) {
+        Serial.println("    HTTP request failed (too many/little pumps)");
+        return;
+    }
+
+    // check if pump is a binary number
+    for (int i = 0; i < pump.length(); i++) {
+        if (pump[i] != '0' and pump[i] != '1') {
+            Serial.println("    HTTP request failed (pumps not in binary format)");
+            Serial.println("    Unexpected char: " + String(pump[i]));
+            return;
+        }
+    }
+
+    // check if amount is a number
+    if (!is_number(amount)) {
+        Serial.println("    HTTP request failed (amount not a number)");
+        return;
+    }
+
+    // set the move struct
+    for (int i = 0; i < 16; i++) {
+        if (pump[i] == '1') {
+            current_move.pumps[i] = true;
+        }
+        else {
+            current_move.pumps[i] = false;
+        }
+    }
+
+    Serial.println("    Pumps: " + pump);
+    Serial.println("    Amount: " + amount);
+
+    current_move.amount = amount.toInt();
+    current_move.run = true; 
+}
+
+/* -------------------------------------------------------------------------- */
+/*                              STEPPER FUNCTIONS                             */
+/* -------------------------------------------------------------------------- */
+
+void stepper_cancel_move() {
+    Serial.println(">Canceling Steppers");
+    
+    stepper.setTargetPositionToStop();
+
+    while (stepper.getCurrentVelocityInStepsPerSecond() != 0.0){
+        delay(10);
+    }
+
+    Serial.println(">    ...OK");
+
+    current_move.run = false;
+    current_move.stop = false;
+
+    current_move.moving = false;
+}
+
+void stepper_make_move() {
+    Serial.println(">Moving Steppers");
+
+    if (current_move.amount < 0) {
+        current_move.amount = -current_move.amount;
+        current_move.pumps[SHIFTREG_DIRECTION_BIT] = true;
+    }
+    else {
+        current_move.pumps[SHIFTREG_DIRECTION_BIT] = false;
+    }
+    
+
+    shiftreg_write(current_move.pumps);
+
+    //stepper.setTargetPositionRelativeInSteps(current_move.amount);
+    stepper.setTargetPositionRelativeInRevolutions(current_move.amount);
+
+    Serial.println(">    ...OK");
+
+    current_move.run = false;
+    current_move.stop = false;
+
+    current_move.moving = true;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                    LOOP                                    */
+/* -------------------------------------------------------------------------- */
+
+void loop() {    
+
+    stepper.processMovement();
+
+    if (current_move.run) {
+        stepper_make_move();
+    }
+
+    if (current_move.stop) {
+        stepper_cancel_move();
+    }
+
+    if (current_move.moving and stepper.motionComplete()) {
+        Serial.println(">Steppers done moving");
+        current_move.moving = false;
+        shiftreg_clear();
+        if (state.step_curr >= state.num_steps) {
+            Serial.println(">Auto Cocktail Done");
+            state.active_cocktail = -1;
+            state.num_steps = -1;
+            state.step_curr = -1;
+        }
+    }
+
+
+    if (!current_move.moving and state.active_cocktail != -1) {
+        if (state.num_steps == -1) {
+            Serial.println(">-----------------------------------------------------------------------------------------");
+            Serial.println(">Auto Cocktail Start");
+            request_cocktail_steps();
+        }
+        else {
+            Serial.println(">-----------------------------------------------------------------------------------------");
+            Serial.println(">Auto Cocktail Step " + String(state.step_curr + 1) + "/" + String(state.num_steps));
+            request_step_info();
+            state.step_curr++;
+        }
+    }
+
+    state.busy = current_move.moving or (state.active_cocktail != -1);
+}
